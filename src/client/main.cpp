@@ -6,6 +6,7 @@
 #include "../common/protocol.hpp"
 
 #include <arpa/inet.h>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <netdb.h>
@@ -56,7 +57,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "bad snapshot: %s\n", line.c_str());
                 continue;
             }
-            std::printf("tick %u: %zu car(s)", s.tick, s.cars.size());
+            std::printf("tick %u hash %016" PRIx64 ": %zu car(s)", s.tick, s.hash, s.cars.size());
             for (const auto& c : s.cars)
                 std::printf("  [car %u pos=(%.2f, %.2f) vel=(%.2f, %.2f)]", c.id,
                             c.x, c.y, c.vx, c.vy);
