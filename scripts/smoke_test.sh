@@ -4,13 +4,14 @@
 #      and the driving client's input reaches the simulation
 #   2. the recorded race log replays with every hash matching
 #   3. a log with one tampered input is reported as a desync at that tick
+#   4. a one-lap race goes lobby -> countdown -> race -> winner and replays
 set -euo pipefail
 BIN=${1:-build}
 PORT=${PORT:-7799}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-"$BIN/racer_server" "$PORT" 50 --seed 7 --record "$TMP/race.log" --max-ticks 100 > "$TMP/server.log" 2>&1 &
+"$BIN/racer_server" "$PORT" 50 --seed 7 --countdown 0 --record "$TMP/race.log" --max-ticks 100 > "$TMP/server.log" 2>&1 &
 SERVER=$!
 sleep 0.5
 
@@ -50,3 +51,15 @@ set -e
 echo "$out"
 [ "$rc" -eq 1 ] && grep -q "DESYNC at tick $t:" <<<"$out" || { echo "FAIL: tampered log not caught at tick $t"; exit 1; }
 echo "PASS: tampered input caught at tick $t"
+
+# A full one-lap race: lobby, countdown, race, a winner, and a log that replays.
+"$BIN/racer_server" "$PORT" 500 --laps 1 --countdown 20 --record "$TMP/lap.log" --max-ticks 2500 > "$TMP/lapserver.log" 2>&1 &
+SERVER=$!
+sleep 0.3
+"$BIN/racer_client" 127.0.0.1 "$PORT" 0 > "$TMP/lapclient.log"
+wait $SERVER
+grep -q '^phase race$' "$TMP/lapclient.log" || { echo "FAIL: race never started"; exit 1; }
+grep -q '^car 1 wins$' "$TMP/lapclient.log" || { echo "FAIL: no winner"; cat "$TMP/lapserver.log"; exit 1; }
+grep -q 'lap 1\]' "$TMP/lapclient.log" || { echo "FAIL: lap count never reached 1"; exit 1; }
+"$BIN/racer_replay" "$TMP/lap.log" > /dev/null || { echo "FAIL: lap race replay"; exit 1; }
+echo "PASS: one-lap race finished with a winner and replays cleanly ($(grep wins "$TMP/lapserver.log"))"
