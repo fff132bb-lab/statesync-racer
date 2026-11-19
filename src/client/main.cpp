@@ -1,7 +1,9 @@
 // Minimal client: connects to the server and prints every snapshot it gets.
 //
-// Usage: racer_client [host] [port] [max_ticks]
+// Usage: racer_client [host] [port] [max_ticks] [--steer S] [--throttle T]
 //   max_ticks = 0 (default) means run until the server closes.
+//   --steer / --throttle drive the car: the client sends that input after
+//   every snapshot. Without them the server's bot drives the car.
 
 #include "../common/protocol.hpp"
 
@@ -15,9 +17,27 @@
 #include <unistd.h>
 
 int main(int argc, char** argv) {
-    const char* host = argc > 1 ? argv[1] : "127.0.0.1";
-    const char* port = argc > 2 ? argv[2] : "7777";
-    const long max_ticks = argc > 3 ? std::atol(argv[3]) : 0;
+    const char* host = "127.0.0.1";
+    const char* port = "7777";
+    long max_ticks = 0;
+    int steer = 0, throttle = 0;
+    bool drive = false;
+    int positional = 0;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--steer" && i + 1 < argc) { steer = std::atoi(argv[++i]); drive = true; }
+        else if (arg == "--throttle" && i + 1 < argc) { throttle = std::atoi(argv[++i]); drive = true; }
+        else if (positional == 0) { host = argv[i]; ++positional; }
+        else if (positional == 1) { port = argv[i]; ++positional; }
+        else if (positional == 2) { max_ticks = std::atol(argv[i]); ++positional; }
+        else { std::fprintf(stderr, "unknown argument: %s\n", argv[i]); return 1; }
+    }
+    int check_s = 0, check_t = 0;
+    if (drive && !racer::decode_input(racer::encode_input(steer, throttle), check_s, check_t)) {
+        std::fprintf(stderr, "steer must be -1..1 and throttle 0..255\n");
+        return 1;
+    }
+    const std::string input_line = racer::encode_input(steer, throttle);
 
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -63,6 +83,7 @@ int main(int argc, char** argv) {
                             c.x, c.y, c.vx, c.vy);
             std::printf("\n");
             std::fflush(stdout);
+            if (drive && ::send(fd, input_line.data(), input_line.size(), MSG_NOSIGNAL) < 0) break;
             if (max_ticks != 0 && ++received >= max_ticks) break;
         }
     }
