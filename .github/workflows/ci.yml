@@ -19,3 +19,29 @@ jobs:
         run: cmake --build build -j
       - name: Smoke test (sync, record, replay, tamper detection)
         run: ./scripts/smoke_test.sh build
+
+  viewer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install X11/OpenGL dev packages and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libgl1-mesa-dri xvfb
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRACER_VIEWER=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Render a frame from a live server
+        run: |
+          ./build/racer_server 7777 20 --seed 42 > server.log &
+          sleep 0.5
+          ./build/racer_client 127.0.0.1 7777 0 > /dev/null &
+          ./build/racer_client 127.0.0.1 7777 0 --steer 1 --throttle 255 > /dev/null &
+          sleep 1
+          xvfb-run -s "-screen 0 1280x720x24" ./build/racer_viewer 127.0.0.1 7777 --frames 180 --screenshot viewer.png
+          test -s viewer.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewer-frame
+          path: viewer.png
