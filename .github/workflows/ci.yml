@@ -17,7 +17,9 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
       - name: Build
         run: cmake --build build -j
-      - name: Smoke test (sync, record, replay, tamper detection)
+      - name: Simulation test (laps, walls, determinism)
+        run: ./build/sim_test
+      - name: Smoke test (sync, input, replay, tamper detection, full race)
         run: ./scripts/smoke_test.sh build
 
   viewer:
@@ -34,12 +36,12 @@ jobs:
         run: cmake --build build -j
       - name: Render a frame from a live server
         run: |
-          ./build/racer_server 7777 20 --seed 42 > server.log &
+          ./build/racer_server 7777 20 --seed 42 --countdown 20 > server.log &
           sleep 0.5
           ./build/racer_client 127.0.0.1 7777 0 > /dev/null &
-          ./build/racer_client 127.0.0.1 7777 0 --steer 1 --throttle 255 > /dev/null &
+          ./build/racer_client 127.0.0.1 7777 0 > /dev/null &
           sleep 1
-          xvfb-run -s "-screen 0 1280x720x24" ./build/racer_viewer 127.0.0.1 7777 --frames 180 --screenshot viewer.png
+          xvfb-run -s "-screen 0 1280x720x24" ./build/racer_viewer 127.0.0.1 7777 --ready --frames 600 --screenshot viewer.png
           test -s viewer.png
       - uses: actions/upload-artifact@v4
         with:
