@@ -19,6 +19,8 @@ only render what the server says.
   `--steer` and `--throttle` it also drives its car.
 - `racer_viewer` (optional, raylib): renders the race live, follows your car,
   and drives it with the arrow keys or WASD.
+- `sim_test`: offline checks that bots lap the track, cars never leave it,
+  and identical inputs give identical hashes.
 - `racer_replay`: re-simulates a recorded race and checks the state hash on
   every tick, reporting the first tick that diverges.
 - `src/common/sim.hpp`: the simulation. Integer-only state (micrometres,
@@ -30,7 +32,8 @@ only render what the server says.
 Wire format, one line per tick (text for now so it's easy to inspect with `nc`):
 
 ```
-STATE <tick> <hash> <count> [<id> <x> <y> <vx> <vy>]...
+PHASE <lobby|countdown|race|finished> ...
+STATE <tick> <hash> <count> [<id> <x> <y> <vx> <vy> <lap>]...
 ```
 
 Clients send their controls the same way. `steer` is -1, 0 or 1 and
@@ -43,10 +46,12 @@ INPUT <steer> <throttle>
 
 ## Viewer
 
-![racer_viewer rendering a live race with three cars](docs/viewer.png)
+![racer_viewer rendering a live three-car race on the track](docs/viewer.png)
 
 This frame was rendered by `racer_viewer` in CI (under Xvfb) against a live
-server with three connected clients. Build it with:
+server with three connected clients, mid-race. Press Enter in the lobby to
+ready up; the race starts after a countdown once every player is ready, and
+the first car to finish the lap target wins. Build it with:
 
 ```sh
 cmake -S . -B build -DRACER_VIEWER=ON   # fetches and builds raylib 5.5
@@ -118,7 +123,8 @@ In one terminal, start the server (port 7777, 20 ticks per second):
 ```
 
 Options: `--seed N` (bot driver seed), `--record FILE` (write a race log),
-`--max-ticks N` (stop after N ticks).
+`--max-ticks N` (stop after N ticks), `--laps N` (laps to win, default 3),
+`--countdown TICKS` (default 3 s), `--min-players N` (default 1).
 
 In one or more other terminals, start clients:
 
@@ -155,7 +161,8 @@ cleanly, and that a log with one tampered input is caught at the right tick.
 - [x] Client input (steer, throttle) sent to the server
 - [x] CI: build with g++ and clang++, run the smoke test
 - [x] raylib viewer with keyboard driving, rendered in CI
-- Lobby with ready-up and countdown, track walls and laps
+- [x] Lobby with ready-up and countdown, track walls, laps and a winner
+- Results screen and rematch without restarting the server
 - Brake and boost inputs
 - Client-side check of server hashes and resync on mismatch
 - Binary wire format and UDP transport
