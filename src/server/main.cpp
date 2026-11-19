@@ -2,8 +2,9 @@
 //
 // Listens on a TCP port, gives every connected client a car, steps the
 // deterministic simulation at a fixed tick rate and broadcasts the full
-// snapshot (with its state hash) to all clients each tick. Cars are driven by
-// seeded bots until client input exists.
+// snapshot (with its state hash) to all clients each tick. A car follows the
+// INPUT lines its client sends; a client that never sends one gets a seeded
+// bot driver, so idle viewers still produce traffic.
 //
 // Usage: racer_server [port] [tick_hz] [--seed N] [--record FILE] [--max-ticks N]
 //   --record FILE   write a race log that racer_replay can verify
@@ -38,6 +39,9 @@ void on_signal(int) { g_running = 0; }
 struct Client {
     int fd;
     uint32_t id;
+    std::string pending;   // bytes received but not yet a full line
+    bool manual = false;   // true once the client has sent any INPUT
+    racer::Input input{};  // latest input, applied every tick
 };
 
 int make_listener(uint16_t port) {
@@ -123,7 +127,9 @@ int main(int argc, char** argv) {
         for (;;) {
             int fd = ::accept(listener, nullptr, nullptr);
             if (fd < 0) break;
-            Client c{fd, next_id++};
+            Client c;
+            c.fd = fd;
+            c.id = next_id++;
             clients.push_back(c);
             world.join(c.id);
             log.join(world.tick(), c.id);
@@ -132,15 +138,35 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
         }
 
-        // Drop clients that closed their side.
+        // Read client input and drop clients that closed their side.
         for (auto it = clients.begin(); it != clients.end();) {
-            pollfd p{it->fd, POLLIN, 0};
-            char buf[256];
             bool gone = false;
-            if (::poll(&p, 1, 0) > 0) {
+            for (;;) {
+                pollfd p{it->fd, POLLIN, 0};
+                if (::poll(&p, 1, 0) <= 0) break;
+                char buf[256];
                 ssize_t n = ::recv(it->fd, buf, sizeof buf, MSG_DONTWAIT);
-                gone = n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+                if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                    gone = true;
+                    break;
+                }
+                if (n < 0) break;
+                it->pending.append(buf, static_cast<size_t>(n));
             }
+            size_t nl;
+            while ((nl = it->pending.find('\n')) != std::string::npos) {
+                const std::string line = it->pending.substr(0, nl);
+                it->pending.erase(0, nl + 1);
+                int steer = 0, throttle = 0;
+                if (racer::decode_input(line, steer, throttle)) {
+                    it->manual = true;
+                    it->input.steer = static_cast<int8_t>(steer);
+                    it->input.throttle = static_cast<uint8_t>(throttle);
+                } else {
+                    std::printf("client %u sent bad line: %s\n", it->id, line.c_str());
+                }
+            }
+            if (it->pending.size() > 4096) gone = true; // no newline in sight
             if (gone) {
                 std::printf("client %u disconnected\n", it->id);
                 world.leave(it->id);
@@ -156,9 +182,12 @@ int main(int argc, char** argv) {
         // Simulate and broadcast one tick.
         const uint32_t tick = world.tick();
         std::map<uint32_t, racer::Input> inputs;
-        for (auto& [id, bot] : bots) {
-            inputs[id] = bot.next();
-            log.input(tick, id, inputs[id]);
+        for (auto& c : clients) {
+            // Advance the bot even for manual cars so a bot's sequence depends
+            // only on its seed, not on when its client took over.
+            const racer::Input bot = bots.at(c.id).next();
+            inputs[c.id] = c.manual ? c.input : bot;
+            log.input(tick, c.id, inputs[c.id]);
         }
         world.step(inputs);
         racer::Snapshot snap;
