@@ -10,8 +10,9 @@ endif()
 add_executable(racer_server src/server/main.cpp)
 add_executable(racer_client src/client/main.cpp)
 add_executable(racer_replay src/tools/replay.cpp)
+add_executable(sim_test tests/sim_test.cpp)
 
-foreach(target racer_server racer_client racer_replay)
+foreach(target racer_server racer_client racer_replay sim_test)
   target_compile_options(${target} PRIVATE -Wall -Wextra)
 endforeach()
 
