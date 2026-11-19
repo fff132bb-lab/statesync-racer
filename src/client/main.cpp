@@ -72,6 +72,11 @@ int main(int argc, char** argv) {
         while ((nl = pending.find('\n')) != std::string::npos) {
             const std::string line = pending.substr(0, nl);
             pending.erase(0, nl + 1);
+            uint32_t my_id = 0;
+            if (racer::decode_welcome(line, my_id)) {
+                std::printf("you are car %u\n", my_id);
+                continue;
+            }
             racer::Snapshot s;
             if (!racer::decode(line, s)) {
                 std::fprintf(stderr, "bad snapshot: %s\n", line.c_str());

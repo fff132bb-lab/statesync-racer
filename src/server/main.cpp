@@ -130,6 +130,10 @@ int main(int argc, char** argv) {
             Client c;
             c.fd = fd;
             c.id = next_id++;
+            if (!send_all(fd, racer::encode_welcome(c.id))) {
+                ::close(fd);
+                continue;
+            }
             clients.push_back(c);
             world.join(c.id);
             log.join(world.tick(), c.id);

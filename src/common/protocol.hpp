@@ -5,6 +5,10 @@
 // <hash> is the server's 16-hex-digit state hash for that tick, so clients
 // (and tests) can tell whether they see exactly the server's state.
 //
+// Right after accepting a connection the server tells the client which car
+// is theirs:
+//   WELCOME <id>\n
+//
 // Clients send their controls as text lines too, at most one per tick:
 //   INPUT <steer> <throttle>\n
 // <steer> is -1, 0 or 1 (heading steps), <throttle> is 0..255. The server
@@ -59,6 +63,16 @@ inline bool decode(const std::string& line, Snapshot& s) {
     for (auto& c : s.cars)
         if (!(in >> c.id >> c.x >> c.y >> c.vx >> c.vy)) return false;
     return true;
+}
+
+inline std::string encode_welcome(uint32_t id) {
+    return "WELCOME " + std::to_string(id) + "\n";
+}
+
+inline bool decode_welcome(const std::string& line, uint32_t& id) {
+    std::istringstream in(line);
+    std::string tag;
+    return (in >> tag >> id) && tag == "WELCOME";
 }
 
 inline std::string encode_input(int steer, int throttle) {
