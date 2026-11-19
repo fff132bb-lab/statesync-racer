@@ -2,11 +2,17 @@
 //
 // Listens on a TCP port, gives every connected client a car, steps the
 // deterministic simulation at a fixed tick rate and broadcasts the full
-// snapshot (with its state hash) to all clients each tick. A car follows the
+// snapshot (with its state hash) to all clients each tick. Players wait in a
+// lobby until everyone has sent READY, then a countdown runs and the race
+// starts; the first car to complete --laps laps wins. A car follows the
 // INPUT lines its client sends; a client that never sends one gets a seeded
 // bot driver, so idle viewers still produce traffic.
 //
 // Usage: racer_server [port] [tick_hz] [--seed N] [--record FILE] [--max-ticks N]
+//                     [--laps N] [--countdown TICKS] [--min-players N]
+//   --laps N          laps to win (default 3)
+//   --countdown TICKS ticks between everyone ready and the start (default 3 s)
+//   --min-players N   players needed before the race can start (default 1)
 //   --record FILE   write a race log that racer_replay can verify
 //   --max-ticks N   stop after N ticks (0 = run until Ctrl+C)
 
@@ -40,6 +46,7 @@ struct Client {
     int fd;
     uint32_t id;
     std::string pending;   // bytes received but not yet a full line
+    bool ready = false;    // sent READY in the lobby
     bool manual = false;   // true once the client has sent any INPUT
     racer::Input input{};  // latest input, applied every tick
 };
@@ -81,20 +88,27 @@ int main(int argc, char** argv) {
     uint64_t seed = 1;
     std::string record_path;
     uint32_t max_ticks = 0;
+    uint32_t laps = 3;
+    long countdown = -1;
+    size_t min_players = 1;
     int positional = 0;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--seed" && i + 1 < argc) seed = std::strtoull(argv[++i], nullptr, 10);
         else if (arg == "--record" && i + 1 < argc) record_path = argv[++i];
         else if (arg == "--max-ticks" && i + 1 < argc) max_ticks = static_cast<uint32_t>(std::atol(argv[++i]));
+        else if (arg == "--laps" && i + 1 < argc) laps = static_cast<uint32_t>(std::atol(argv[++i]));
+        else if (arg == "--countdown" && i + 1 < argc) countdown = std::atol(argv[++i]);
+        else if (arg == "--min-players" && i + 1 < argc) min_players = static_cast<size_t>(std::atol(argv[++i]));
         else if (positional == 0) { port = static_cast<uint16_t>(std::atoi(argv[i])); ++positional; }
         else if (positional == 1) { tick_hz = std::atoi(argv[i]); ++positional; }
         else { std::fprintf(stderr, "unknown argument: %s\n", argv[i]); return 1; }
     }
-    if (tick_hz <= 0) {
-        std::fprintf(stderr, "tick_hz must be positive\n");
+    if (tick_hz <= 0 || laps == 0) {
+        std::fprintf(stderr, "tick_hz and laps must be positive\n");
         return 1;
     }
+    if (countdown < 0) countdown = 3L * tick_hz;
 
     racer::RaceLogWriter log;
     if (!record_path.empty() && !log.open(record_path, seed)) {
@@ -120,6 +134,7 @@ int main(int argc, char** argv) {
     std::map<uint32_t, racer::BotDriver> bots;
     std::vector<Client> clients;
     uint32_t next_id = 1;
+    racer::PhaseInfo phase;
     auto next_tick = clock::now();
 
     while (g_running) {
@@ -162,7 +177,9 @@ int main(int argc, char** argv) {
                 const std::string line = it->pending.substr(0, nl);
                 it->pending.erase(0, nl + 1);
                 int steer = 0, throttle = 0;
-                if (racer::decode_input(line, steer, throttle)) {
+                if (racer::is_ready_line(line)) {
+                    it->ready = true;
+                } else if (racer::decode_input(line, steer, throttle)) {
                     it->manual = true;
                     it->input.steer = static_cast<int8_t>(steer);
                     it->input.throttle = static_cast<uint8_t>(throttle);
@@ -183,17 +200,46 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Lobby and countdown. Phase changes are not part of the simulated
+        // state: cars simply get no input until the race starts.
+        if (phase.phase == racer::Phase::Lobby || phase.phase == racer::Phase::Countdown) {
+            size_t ready = 0;
+            for (const auto& c : clients) ready += c.ready;
+            const bool go = clients.size() >= min_players && ready == clients.size();
+            if (!go) {
+                phase = {racer::Phase::Lobby, static_cast<uint32_t>(ready),
+                         static_cast<uint32_t>(clients.size())};
+            } else if (phase.phase == racer::Phase::Lobby) {
+                phase = {racer::Phase::Countdown, static_cast<uint32_t>(countdown), 0};
+            } else if (phase.a > 0) {
+                --phase.a;
+            }
+            if (phase.phase == racer::Phase::Countdown && phase.a == 0) {
+                phase = {racer::Phase::Race, laps, 0};
+                std::printf("race started at tick %u\n", world.tick());
+            }
+        }
+
         // Simulate and broadcast one tick.
         const uint32_t tick = world.tick();
         std::map<uint32_t, racer::Input> inputs;
         for (auto& c : clients) {
+            if (phase.phase != racer::Phase::Race) break;
             // Advance the bot even for manual cars so a bot's sequence depends
             // only on its seed, not on when its client took over.
-            const racer::Input bot = bots.at(c.id).next();
+            const racer::Input bot = bots.at(c.id).next(*world.find(c.id));
             inputs[c.id] = c.manual ? c.input : bot;
             log.input(tick, c.id, inputs[c.id]);
         }
         world.step(inputs);
+        if (phase.phase == racer::Phase::Race) {
+            uint16_t best = 0;
+            const uint32_t leader = world.leader(&best);
+            if (best >= laps) {
+                phase = {racer::Phase::Finished, leader, 0};
+                std::printf("car %u wins after %u ticks\n", leader, world.tick());
+            }
+        }
         racer::Snapshot snap;
         snap.tick = tick;
         snap.hash = world.hash();
@@ -205,9 +251,10 @@ int main(int argc, char** argv) {
             cs.y = static_cast<float>(c.y) / 1e6f;
             cs.vx = static_cast<float>(c.vx) * static_cast<float>(tick_hz) / 1e6f;
             cs.vy = static_cast<float>(c.vy) * static_cast<float>(tick_hz) / 1e6f;
+            cs.lap = c.lap;
             snap.cars.push_back(cs);
         }
-        const std::string wire = racer::encode(snap);
+        const std::string wire = racer::encode_phase(phase) + racer::encode(snap);
         for (auto it = clients.begin(); it != clients.end();) {
             if (send_all(it->fd, wire)) {
                 ++it;

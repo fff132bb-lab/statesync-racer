@@ -2,6 +2,8 @@
 //
 // Usage: racer_client [host] [port] [max_ticks] [--steer S] [--throttle T]
 //   max_ticks = 0 (default) means run until the server closes.
+//   The client sends READY as soon as it connects, so headless clients never
+//   hold up the lobby.
 //   --steer / --throttle drive the car: the client sends that input after
 //   every snapshot. Without them the server's bot drives the car.
 
@@ -60,6 +62,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("connected to %s:%s\n", host, port);
+    const std::string ready = "READY\n";
+    if (::send(fd, ready.data(), ready.size(), MSG_NOSIGNAL) < 0) {
+        std::fprintf(stderr, "send failed\n");
+        return 1;
+    }
+    racer::Phase last_phase = racer::Phase::Lobby;
+    bool seen_phase = false;
 
     std::string pending;
     char buf[4096];
@@ -77,6 +86,16 @@ int main(int argc, char** argv) {
                 std::printf("you are car %u\n", my_id);
                 continue;
             }
+            racer::PhaseInfo ph;
+            if (racer::decode_phase(line, ph)) {
+                if (!seen_phase || ph.phase != last_phase) {
+                    std::printf("phase %s\n", racer::phase_name(ph.phase));
+                    if (ph.phase == racer::Phase::Finished) std::printf("car %u wins\n", ph.a);
+                }
+                seen_phase = true;
+                last_phase = ph.phase;
+                continue;
+            }
             racer::Snapshot s;
             if (!racer::decode(line, s)) {
                 std::fprintf(stderr, "bad snapshot: %s\n", line.c_str());
@@ -84,8 +103,8 @@ int main(int argc, char** argv) {
             }
             std::printf("tick %u hash %016" PRIx64 ": %zu car(s)", s.tick, s.hash, s.cars.size());
             for (const auto& c : s.cars)
-                std::printf("  [car %u pos=(%.2f, %.2f) vel=(%.2f, %.2f)]", c.id,
-                            c.x, c.y, c.vx, c.vy);
+                std::printf("  [car %u pos=(%.2f, %.2f) vel=(%.2f, %.2f) lap %u]", c.id,
+                            c.x, c.y, c.vx, c.vy, c.lap);
             std::printf("\n");
             std::fflush(stdout);
             if (drive && ::send(fd, input_line.data(), input_line.size(), MSG_NOSIGNAL) < 0) break;

@@ -1,9 +1,15 @@
 // Wire protocol shared by server and client.
 //
 // One snapshot per server tick, sent as a single text line:
-//   STATE <tick> <hash> <count> [<id> <x> <y> <vx> <vy>]...\n
+//   STATE <tick> <hash> <count> [<id> <x> <y> <vx> <vy> <lap>]...\n
 // <hash> is the server's 16-hex-digit state hash for that tick, so clients
 // (and tests) can tell whether they see exactly the server's state.
+//
+// Each STATE line is preceded by the race phase:
+//   PHASE lobby <ready> <players>      waiting for everyone to send READY
+//   PHASE countdown <ticks_left>       race starts when this reaches 0
+//   PHASE race <laps>                  racing, first to <laps> wins
+//   PHASE finished <winner_id>         race over
 //
 // Right after accepting a connection the server tells the client which car
 // is theirs:
@@ -30,7 +36,44 @@ struct CarState {
     uint32_t id = 0;
     float x = 0.f, y = 0.f;   // position (m)
     float vx = 0.f, vy = 0.f; // velocity (m/s)
+    uint32_t lap = 0;         // completed laps
 };
+
+enum class Phase { Lobby, Countdown, Race, Finished };
+
+struct PhaseInfo {
+    Phase phase = Phase::Lobby;
+    uint32_t a = 0, b = 0;  // lobby: ready, players; countdown: ticks left;
+                            // race: laps to win; finished: winner id
+};
+
+inline const char* phase_name(Phase p) {
+    switch (p) {
+    case Phase::Lobby: return "lobby";
+    case Phase::Countdown: return "countdown";
+    case Phase::Race: return "race";
+    case Phase::Finished: return "finished";
+    }
+    return "?";
+}
+
+inline std::string encode_phase(const PhaseInfo& p) {
+    std::string out = std::string("PHASE ") + phase_name(p.phase) + " " + std::to_string(p.a);
+    if (p.phase == Phase::Lobby) out += " " + std::to_string(p.b);
+    return out + "\n";
+}
+
+inline bool decode_phase(const std::string& line, PhaseInfo& p) {
+    std::istringstream in(line);
+    std::string tag, name;
+    if (!(in >> tag >> name >> p.a) || tag != "PHASE") return false;
+    if (name == "lobby") { p.phase = Phase::Lobby; return static_cast<bool>(in >> p.b); }
+    if (name == "countdown") p.phase = Phase::Countdown;
+    else if (name == "race") p.phase = Phase::Race;
+    else if (name == "finished") p.phase = Phase::Finished;
+    else return false;
+    return true;
+}
 
 struct Snapshot {
     uint32_t tick = 0;
@@ -44,8 +87,8 @@ inline std::string encode(const Snapshot& s) {
                   s.cars.size());
     std::string out = buf;
     for (const auto& c : s.cars) {
-        std::snprintf(buf, sizeof buf, " %u %.3f %.3f %.3f %.3f", c.id, c.x,
-                      c.y, c.vx, c.vy);
+        std::snprintf(buf, sizeof buf, " %u %.3f %.3f %.3f %.3f %u", c.id, c.x,
+                      c.y, c.vx, c.vy, c.lap);
         out += buf;
     }
     out += '\n';
@@ -61,7 +104,7 @@ inline bool decode(const std::string& line, Snapshot& s) {
     s.hash = std::stoull(hex, nullptr, 16);
     s.cars.assign(count, {});
     for (auto& c : s.cars)
-        if (!(in >> c.id >> c.x >> c.y >> c.vx >> c.vy)) return false;
+        if (!(in >> c.id >> c.x >> c.y >> c.vx >> c.vy >> c.lap)) return false;
     return true;
 }
 
@@ -73,6 +116,12 @@ inline bool decode_welcome(const std::string& line, uint32_t& id) {
     std::istringstream in(line);
     std::string tag;
     return (in >> tag >> id) && tag == "WELCOME";
+}
+
+inline bool is_ready_line(const std::string& line) {
+    std::istringstream in(line);
+    std::string tag, extra;
+    return (in >> tag) && tag == "READY" && !(in >> extra);
 }
 
 inline std::string encode_input(int steer, int throttle) {
