@@ -17,6 +17,8 @@ only render what the server says.
   Handles clients joining and leaving at any time.
 - `racer_client`: connects, decodes each snapshot, and prints it. With
   `--steer` and `--throttle` it also drives its car.
+- `racer_viewer` (optional, raylib): renders the race live, follows your car,
+  and drives it with the arrow keys or WASD.
 - `racer_replay`: re-simulates a recorded race and checks the state hash on
   every tick, reporting the first tick that diverges.
 - `src/common/sim.hpp`: the simulation. Integer-only state (micrometres,
@@ -38,6 +40,22 @@ a new one arrives, and records it in the race log so replays stay exact.
 ```
 INPUT <steer> <throttle>
 ```
+
+## Viewer
+
+![racer_viewer rendering a live race with three cars](docs/viewer.png)
+
+This frame was rendered by `racer_viewer` in CI (under Xvfb) against a live
+server with three connected clients. Build it with:
+
+```sh
+cmake -S . -B build -DRACER_VIEWER=ON   # fetches and builds raylib 5.5
+cmake --build build -j
+./build/racer_viewer 127.0.0.1 7777
+```
+
+On Linux raylib needs the X11 and OpenGL dev packages
+(`libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev`).
 
 ## Record and replay
 
@@ -136,6 +154,8 @@ cleanly, and that a log with one tampered input is caught at the right tick.
 - [x] Input logging and headless replay for desync detection
 - [x] Client input (steer, throttle) sent to the server
 - [x] CI: build with g++ and clang++, run the smoke test
+- [x] raylib viewer with keyboard driving, rendered in CI
+- Lobby with ready-up and countdown, track walls and laps
 - Brake and boost inputs
 - Client-side check of server hashes and resync on mismatch
 - Binary wire format and UDP transport
