@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check:
-#   1. server + two clients: both receive snapshots
+#   1. server + three clients (one driving its own car): all receive snapshots,
+#      and the driving client's input reaches the simulation
 #   2. the recorded race log replays with every hash matching
 #   3. a log with one tampered input is reported as a desync at that tick
 set -euo pipefail
@@ -14,6 +15,7 @@ SERVER=$!
 sleep 0.5
 
 "$BIN/racer_client" 127.0.0.1 "$PORT" 5 > "$TMP/client1.log" &
+"$BIN/racer_client" 127.0.0.1 "$PORT" 10 --steer 1 --throttle 255 > "$TMP/driver.log" &
 "$BIN/racer_client" 127.0.0.1 "$PORT" 5 > "$TMP/client2.log"
 wait $SERVER
 
@@ -21,7 +23,15 @@ for f in "$TMP/client1.log" "$TMP/client2.log"; do
   n=$(grep -c '^tick ' "$f")
   [ "$n" -eq 5 ] || { echo "FAIL: $f got $n snapshots"; exit 1; }
 done
-echo "PASS: both clients received 5 snapshots"
+n=$(grep -c '^tick ' "$TMP/driver.log")
+[ "$n" -eq 10 ] || { echo "FAIL: driver got $n snapshots"; exit 1; }
+echo "PASS: all clients received their snapshots"
+
+# The driver sends "INPUT 1 255" after each snapshot; the server must apply
+# it on later ticks (bots almost never produce exactly that pair repeatedly).
+n=$(awk '$1=="I" && $4==1 && $5==255' "$TMP/race.log" | wc -l)
+[ "$n" -ge 5 ] || { echo "FAIL: driver input applied on only $n ticks"; exit 1; }
+echo "PASS: driver input applied on $n ticks"
 
 # Hash a client saw must equal the hash the server logged for that tick.
 read -r tick hash < <(awk '/^tick /{print $2, $4; exit}' "$TMP/client2.log" | tr -d :)
