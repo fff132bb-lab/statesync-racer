@@ -9,16 +9,54 @@ only render what the server says.
 ## What works today
 
 - `racer_server`: listens on a TCP port, gives each connected client a car,
-  steps a dummy simulation (each car drives a circle) at a fixed tick rate,
-  and broadcasts position and velocity for every car each tick. Handles
-  clients joining and leaving at any time.
+  steps a deterministic simulation at a fixed tick rate, and broadcasts every
+  car's position and velocity plus a state hash each tick. Cars are driven by
+  seeded bots for now. Handles clients joining and leaving at any time.
 - `racer_client`: connects, decodes each snapshot, and prints it.
-- `src/common/protocol.hpp`: the snapshot format shared by both sides.
+- `racer_replay`: re-simulates a recorded race and checks the state hash on
+  every tick, reporting the first tick that diverges.
+- `src/common/sim.hpp`: the simulation. Integer-only state (micrometres,
+  micrometres per tick, 16 headings), so the same inputs give bit-identical
+  results on any machine, plus a 64-bit FNV-1a hash of the full world state.
+- `src/common/racelog.hpp`: race log writer and replayer.
+- `src/common/protocol.hpp`: the snapshot format shared by server and client.
 
 Wire format, one line per tick (text for now so it's easy to inspect with `nc`):
 
 ```
-STATE <tick> <count> [<id> <x> <y> <vx> <vy>]...
+STATE <tick> <hash> <count> [<id> <x> <y> <vx> <vy>]...
+```
+
+## Record and replay
+
+The server can log everything needed to rebuild a race: who joined or left on
+which tick, every input applied, and the state hash after each tick.
+
+```sh
+./build/racer_server 7777 20 --seed 42 --record race.log --max-ticks 200
+# connect a client or two, then:
+./build/racer_replay race.log
+# OK: 200 ticks replayed, all hashes match
+```
+
+If anything in the simulation stops being deterministic, or a log is changed,
+the replay stops at the first bad tick:
+
+```
+DESYNC at tick 30: expected 34222ba6cf51870e, got b81440728636157e (31 ticks checked)
+```
+
+`racer_replay` exits 0 when every hash matches, 1 on a desync, and 2 on a
+malformed log, so it can gate CI.
+
+Race log format, one record per line:
+
+```
+RACELOG 1 <seed>
+J <tick> <id>                 car joined
+L <tick> <id>                 car left
+I <tick> <id> <steer> <thr>   input applied on that tick
+H <tick> <hash>               state hash after that tick
 ```
 
 ## Build
@@ -38,6 +76,7 @@ Or directly:
 mkdir -p build
 c++ -std=c++17 -O2 src/server/main.cpp -o build/racer_server
 c++ -std=c++17 -O2 src/client/main.cpp -o build/racer_client
+c++ -std=c++17 -O2 src/tools/replay.cpp -o build/racer_replay
 ```
 
 ## Run
@@ -48,6 +87,9 @@ In one terminal, start the server (port 7777, 20 ticks per second):
 ./build/racer_server 7777 20
 ```
 
+Options: `--seed N` (bot driver seed), `--record FILE` (write a race log),
+`--max-ticks N` (stop after N ticks).
+
 In one or more other terminals, start clients:
 
 ```sh
@@ -57,7 +99,7 @@ In one or more other terminals, start clients:
 Each client prints lines like:
 
 ```
-tick 12: 2 car(s)  [car 1 pos=(13.51, 21.04) vel=(-10.52, 6.75)]  [car 2 pos=(-3.87, 29.75) vel=(-14.88, -1.93)]
+tick 79 hash b43b7c3381244bad: 1 car(s)  [car 2 pos=(4.12, 9.48) vel=(-12.20, 13.18)]
 ```
 
 Pass a third argument to stop after N snapshots, for example
@@ -71,13 +113,16 @@ Stop the server with Ctrl+C.
 ./scripts/smoke_test.sh build
 ```
 
-Starts a server, connects two clients, and checks both got 5 snapshots.
+Starts a recording server, connects two clients, and checks that both got
+snapshots, that a client's hash matches the server log, that the log replays
+cleanly, and that a log with one tampered input is caught at the right tick.
 
 ## Roadmap
 
+- [x] Deterministic integer physics and per-tick state hashes
+- [x] Input logging and headless replay for desync detection
 - Client input (steer, throttle, brake) sent to the server
-- Deterministic fixed-point physics and per-tick state hashes
-- Input logging and headless replay for desync detection
+- Client-side check of server hashes and resync on mismatch
 - Binary wire format and UDP transport
 - Sharding races across multiple server nodes
 

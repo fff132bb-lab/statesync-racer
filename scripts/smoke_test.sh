@@ -1,22 +1,42 @@
 #!/usr/bin/env bash
-# Starts the server, connects two clients, and checks both received snapshots.
+# End-to-end check:
+#   1. server + two clients: both receive snapshots
+#   2. the recorded race log replays with every hash matching
+#   3. a log with one tampered input is reported as a desync at that tick
 set -euo pipefail
 BIN=${1:-build}
 PORT=${PORT:-7799}
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
 
-"$BIN/racer_server" "$PORT" 20 > /tmp/racer_server.log 2>&1 &
+"$BIN/racer_server" "$PORT" 50 --seed 7 --record "$TMP/race.log" --max-ticks 100 > "$TMP/server.log" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
 sleep 0.5
 
-"$BIN/racer_client" 127.0.0.1 "$PORT" 5 > /tmp/racer_client1.log &
-"$BIN/racer_client" 127.0.0.1 "$PORT" 5 > /tmp/racer_client2.log
-wait %2 2>/dev/null || true
+"$BIN/racer_client" 127.0.0.1 "$PORT" 5 > "$TMP/client1.log" &
+"$BIN/racer_client" 127.0.0.1 "$PORT" 5 > "$TMP/client2.log"
+wait $SERVER
 
-for f in /tmp/racer_client1.log /tmp/racer_client2.log; do
+for f in "$TMP/client1.log" "$TMP/client2.log"; do
   n=$(grep -c '^tick ' "$f")
-  if [ "$n" -ne 5 ]; then
-    echo "FAIL: $f got $n snapshots"; exit 1
-  fi
+  [ "$n" -eq 5 ] || { echo "FAIL: $f got $n snapshots"; exit 1; }
 done
 echo "PASS: both clients received 5 snapshots"
+
+# Hash a client saw must equal the hash the server logged for that tick.
+read -r tick hash < <(awk '/^tick /{print $2, $4; exit}' "$TMP/client2.log" | tr -d :)
+grep -q "^H $tick $hash\$" "$TMP/race.log" || { echo "FAIL: client hash for tick $tick not in log"; exit 1; }
+echo "PASS: client hash matches server log at tick $tick"
+
+"$BIN/racer_replay" "$TMP/race.log" || { echo "FAIL: clean replay"; exit 1; }
+echo "PASS: clean replay"
+
+# Bump the throttle of the first input at the last recorded input tick.
+t=$(awk '$1=="I"{t=$2} END{print t}' "$TMP/race.log")
+awk -v t="$t" '!d && $1=="I" && $2==t {$5=($5+1)%256; d=1} {print}' "$TMP/race.log" > "$TMP/bad.log"
+set +e
+out=$("$BIN/racer_replay" "$TMP/bad.log"); rc=$?
+set -e
+echo "$out"
+[ "$rc" -eq 1 ] && grep -q "DESYNC at tick $t:" <<<"$out" || { echo "FAIL: tampered log not caught at tick $t"; exit 1; }
+echo "PASS: tampered input caught at tick $t"
