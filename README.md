@@ -1,5 +1,7 @@
 # statesync-racer
 
+[![ci](https://github.com/fff132bb-lab/statesync-racer/actions/workflows/ci.yml/badge.svg)](https://github.com/fff132bb-lab/statesync-racer/actions/workflows/ci.yml)
+
 A small multiplayer racing game built around **server-authoritative state sync**.
 
 The server owns the simulation. It steps every car at a fixed tick rate and
@@ -10,9 +12,11 @@ only render what the server says.
 
 - `racer_server`: listens on a TCP port, gives each connected client a car,
   steps a deterministic simulation at a fixed tick rate, and broadcasts every
-  car's position and velocity plus a state hash each tick. Cars are driven by
-  seeded bots for now. Handles clients joining and leaving at any time.
-- `racer_client`: connects, decodes each snapshot, and prints it.
+  car's position and velocity plus a state hash each tick. Each car follows
+  its client's input; clients that send none get a seeded bot driver.
+  Handles clients joining and leaving at any time.
+- `racer_client`: connects, decodes each snapshot, and prints it. With
+  `--steer` and `--throttle` it also drives its car.
 - `racer_replay`: re-simulates a recorded race and checks the state hash on
   every tick, reporting the first tick that diverges.
 - `src/common/sim.hpp`: the simulation. Integer-only state (micrometres,
@@ -25,6 +29,14 @@ Wire format, one line per tick (text for now so it's easy to inspect with `nc`):
 
 ```
 STATE <tick> <hash> <count> [<id> <x> <y> <vx> <vy>]...
+```
+
+Clients send their controls the same way. `steer` is -1, 0 or 1 and
+`throttle` is 0..255; the server applies the latest line on every tick until
+a new one arrives, and records it in the race log so replays stay exact.
+
+```
+INPUT <steer> <throttle>
 ```
 
 ## Record and replay
@@ -114,14 +126,17 @@ Stop the server with Ctrl+C.
 ```
 
 Starts a recording server, connects two clients, and checks that both got
-snapshots, that a client's hash matches the server log, that the log replays
+snapshots, that a driving client's input reaches the simulation, that a
+client's hash matches the server log, that the log replays
 cleanly, and that a log with one tampered input is caught at the right tick.
 
 ## Roadmap
 
 - [x] Deterministic integer physics and per-tick state hashes
 - [x] Input logging and headless replay for desync detection
-- Client input (steer, throttle, brake) sent to the server
+- [x] Client input (steer, throttle) sent to the server
+- [x] CI: build with g++ and clang++, run the smoke test
+- Brake and boost inputs
 - Client-side check of server hashes and resync on mismatch
 - Binary wire format and UDP transport
 - Sharding races across multiple server nodes
